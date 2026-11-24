@@ -6,13 +6,18 @@ eTool 是面向试验任务的远端 GPU 执行工具。它接收使用者提供
 
 ## 通过 Skill 安装
 
-在需要使用 eTool 的业务项目目录中执行：
+默认采用**项目级安装**。在需要使用 eTool 的业务项目目录中执行：
 
 ```bash
 npx skills add Aiid0/eTool --skill etool
 ```
 
-按提示选择使用的智能体。安装器会一起下载 [SKILL.md](SKILL.md)、启动入口、程序源码和任务模板，默认安装到当前项目的 `.agents/skills/etool/`。安装需要 Node.js 22.20+、npm/npx 和 Git；运行入口还需要 uv，其他执行条件见 [运行环境](#运行环境)。安装后可让智能体按 eTool Skill 的说明准备和执行任务。
+| 安装范围 | 安装参数 | 默认 Skill 目录 | 使用范围 |
+| --- | --- | --- | --- |
+| 项目级（默认） | 不加 `-g` | 当前项目的 `.agents/skills/etool/` | 安装所在项目 |
+| 用户级全局 | 加 `-g` | `~/.agents/skills/etool/` | 当前用户的多个项目 |
+
+按提示选择使用的智能体。安装器会一起下载 [SKILL.md](SKILL.md)、启动入口、程序源码和任务模板。安装需要 Node.js 22.20+、npm/npx 和 Git；运行入口还需要 uv，其他执行条件见 [运行环境](#运行环境)。安装后可让智能体按 eTool Skill 的说明准备和执行任务。
 
 例如，只为 Codex 安装且跳过交互选择：
 
@@ -30,16 +35,16 @@ uv run "$ETOOL_SKILL/scripts/etool.py" --help
 
 `scripts/etool.py` 使用 uv 的脚本环境运行随附源码，并保留当前业务项目目录。Python 解释器由脚本的版本要求选择，业务项目的 Python 依赖分别管理。使用复制安装等选项时，以安装器输出的实际路径设置 `ETOOL_SKILL`。
 
-### 在多个项目中使用
+### 用户级全局安装（跨项目共用）
 
-用户级安装可供多个项目共用：
+希望当前用户的多个项目共用 eTool 时，在安装命令中加 `-g`：
 
 ```bash
 npx skills add Aiid0/eTool --skill etool -g
 ETOOL_SKILL="$HOME/.agents/skills/etool"
 ```
 
-在各业务项目中分别准备 `etool.json` 和任务配置；默认 `.etool` 状态目录跟随该项目的配置文件。更新已安装的项目级或用户级 Skill：
+两种安装范围下，都在各业务项目中分别准备 `etool.json` 和任务配置。默认 `.etool` 状态目录跟随各项目的配置文件，任务记录和回收产物按项目保存。更新已安装的项目级或用户级 Skill：
 
 ```bash
 npx skills check
