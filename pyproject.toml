@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etool-gpu"
+version = "0.1.0"
+description = "Package and run tasks on GPU servers over SSH"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+etool = "etool.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["etool"]

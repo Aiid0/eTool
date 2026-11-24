@@ -1,0 +1,9 @@
+{
+  "host": "gpu-server",
+  "user": "gpuuser",
+  "port": 22,
+  "remote_root": "/home/gpuuser/etool",
+  "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000000",
+  "gpu_index": 0,
+  "state_dir": ".etool"
+}

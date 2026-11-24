@@ -1,0 +1,14 @@
+{
+  "name": "my-task",
+  "context": ".",
+  "dockerfile": "Dockerfile",
+  "command": ["--config", "/app/config/task.json", "--output", "/outputs"],
+  "local_check": ["--config", "/app/config/task.json", "--output", "/outputs"],
+  "resources": {
+    "cpus": 1,
+    "memory": "2g",
+    "shm_size": "256m",
+    "min_free_gpu_mib": 256
+  },
+  "env": {}
+}

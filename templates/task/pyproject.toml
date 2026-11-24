@@ -1,0 +1,9 @@
+[project]
+name = "etool-task"
+version = "0.1.0"
+description = "Task workspace for eTool"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
