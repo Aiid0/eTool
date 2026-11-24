@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.event.deleted == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
+      - name: Check release version
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import tomllib
+
+          from etool import __version__
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
+              raise SystemExit("Release tags must use vMAJOR.MINOR.PATCH, such as v0.1.0")
+
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          lock = tomllib.loads(Path("uv.lock").read_text())
+          packages = [
+              package for package in lock["package"]
+              if package["name"] == project["name"]
+              and package.get("source", {}).get("editable") == "."
+          ]
+          if len(packages) != 1:
+              raise SystemExit("uv.lock must contain exactly one editable root package")
+
+          versions = {
+              "tag": tag[1:],
+              "pyproject.toml": project["version"],
+              "etool.__version__": __version__,
+              "uv.lock": packages[0]["version"],
+          }
+          if len(set(versions.values())) != 1:
+              raise SystemExit(f"Release versions do not match: {versions}")
+          print(f"Release version verified: {tag}")
+          PY
+
+      - name: Check CLI entry point
+        run: |
+          python scripts/etool.py --version
+          python scripts/etool.py --help
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"
