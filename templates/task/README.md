@@ -1,5 +1,7 @@
 # 官方任务模板
 
+**简体中文** | [English](README.en.md)
+
 本目录随 eTool Skill 一起安装。复制它建立自己的任务，按下面的位置修改代码、配置和运行环境。先按 [安装说明](https://github.com/Aiid0/eTool#通过-skill-安装) 设置 `ETOOL_SKILL` 为实际安装目录，以下命令均在业务项目根目录执行。
 
 ## 创建任务目录
@@ -25,7 +27,8 @@ tasks/my-task/
 ├── uv.lock              # 任务依赖锁文件
 ├── .python-version      # 本地任务解释器版本
 ├── .dockerignore        # 进入镜像构建上下文的文件
-└── README.md
+├── README.md
+└── README.en.md
 ```
 
 ## 修改代码与配置
