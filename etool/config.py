@@ -11,13 +11,13 @@ DEFAULTS = {
     "port": 22,
     "state_dir": ".etool",
 }
-REQUIRED_CONFIG_FIELDS = ("host", "user", "remote_root", "gpu_uuid", "gpu_index")
-CONFIG_FIELDS = frozenset((*REQUIRED_CONFIG_FIELDS, *DEFAULTS))
+REQUIRED_CONFIG_FIELDS = ("host", "user", "remote_root")
+LEGACY_GPU_FIELDS = ("gpu_uuid", "gpu_index")
+CONFIG_FIELDS = frozenset((*REQUIRED_CONFIG_FIELDS, *DEFAULTS, *LEGACY_GPU_FIELDS))
 RESOURCE_DEFAULTS = {
     "cpus": 1,
     "memory": "2g",
     "shm_size": "256m",
-    "min_free_gpu_mib": 256,
 }
 
 
@@ -70,16 +70,11 @@ def load_config(path=None):
     port = config["port"]
     if type(port) is not int or not 1 <= port <= 65535:
         raise ConfigError("port must be an integer between 1 and 65535")
-    gpu_index = config["gpu_index"]
-    if type(gpu_index) is not int or gpu_index < 0:
-        raise ConfigError("gpu_index must be a nonnegative integer")
-    gpu_uuid = config["gpu_uuid"]
-    if not isinstance(gpu_uuid, str) or not re.fullmatch(
-        r"GPU-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", gpu_uuid
-    ):
-        raise ConfigError("gpu_uuid must be a full NVIDIA GPU UUID, "
-                          "such as GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
-    config["gpu_uuid"] = "GPU-" + gpu_uuid[4:].lower()
+    if any(field in config for field in LEGACY_GPU_FIELDS):
+        if not all(field in config for field in LEGACY_GPU_FIELDS):
+            raise ConfigError("Legacy gpu_uuid and gpu_index must be provided together")
+        gpu = _requirements({"gpu": {"uuid": config["gpu_uuid"], "index": config["gpu_index"]}})["gpu"]
+        config["gpu_uuid"] = gpu["uuid"]
     root = config["remote_root"]
     if not isinstance(root, str) or not re.fullmatch(r"/[A-Za-z0-9_./-]+", root):
         raise ConfigError("remote_root must be an absolute path using simple path characters")
@@ -131,12 +126,35 @@ def _resources(value):
         raise ConfigError("resources.memory must be between 64m and 512g")
     if not 1024**2 <= shm <= memory:
         raise ConfigError("resources.shm_size must be at least 1m and no larger than resources.memory")
-    free = resources["min_free_gpu_mib"]
-    if isinstance(free, bool) or not isinstance(free, int) or not 0 <= free <= 81920:
-        raise ConfigError("resources.min_free_gpu_mib must be an integer between 0 and 81920")
     resources["memory"] = resources["memory"].lower()
     resources["shm_size"] = resources["shm_size"].lower()
     return resources
+
+
+def _requirements(value):
+    if not isinstance(value, dict):
+        raise ConfigError("requirements must be an object")
+    _unknown(value, {"gpu"}, "requirements")
+    if "gpu" not in value:
+        return {}
+    gpu = value["gpu"]
+    if not isinstance(gpu, dict):
+        raise ConfigError("requirements.gpu must be an object")
+    _unknown(gpu, {"uuid", "index", "min_free_mib"}, "requirements.gpu")
+    uuid = gpu.get("uuid")
+    if not isinstance(uuid, str) or not re.fullmatch(
+        r"GPU-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", uuid
+    ):
+        raise ConfigError("requirements.gpu.uuid must be a full NVIDIA GPU UUID")
+    if type(gpu.get("index")) is not int or gpu["index"] < 0:
+        raise ConfigError("requirements.gpu.index must be a nonnegative integer")
+    result = {"uuid": "GPU-" + uuid[4:].lower(), "index": gpu["index"]}
+    if "min_free_mib" in gpu:
+        free = gpu["min_free_mib"]
+        if type(free) is not int or not 0 <= free <= 81920:
+            raise ConfigError("requirements.gpu.min_free_mib must be an integer between 0 and 81920")
+        result["min_free_mib"] = free
+    return {"gpu": result}
 
 
 def _environment(value):
@@ -155,13 +173,13 @@ def _environment(value):
 
 
 def load_project(path):
-    """Normalize an experiment description without building or running anything."""
+    """Normalize a task description without building or running anything."""
     source = Path(path).expanduser()
     if source.is_dir():
         source = source / "experiment.json"
     source = source.resolve()
     value = _read_json(source)
-    _unknown(value, {"name", "context", "dockerfile", "image", "command", "local_check", "resources", "env"}, "experiment")
+    _unknown(value, {"name", "context", "dockerfile", "image", "command", "local_check", "resources", "env", "requirements"}, "experiment")
     name = value.get("name", source.parent.name)
     if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
         raise ConfigError("name must contain 1-64 letters, digits, periods, underscores or hyphens")
@@ -190,7 +208,12 @@ def load_project(path):
     command = _arguments(value.get("command"), "command")
     local_check = _arguments(value.get("local_check"), "local_check")
     env = _environment(value.get("env", {}))
-    resources = _resources(value.get("resources", {}))
+    resource_values = value.get("resources", {})
+    if isinstance(resource_values, dict) and "min_free_gpu_mib" in resource_values:
+        raise ConfigError("Move resources.min_free_gpu_mib to requirements.gpu.min_free_mib; "
+                          "declare the GPU uuid and index in requirements.gpu")
+    resources = _resources(resource_values)
+    requirements = _requirements(value.get("requirements", {}))
     return {
         "name": name,
         "project_file": str(source),
@@ -201,5 +224,6 @@ def load_project(path):
         "local_check": local_check,
         "env": env,
         "resources": resources,
-        "options": {"command": command, "env": env, **resources},
+        "requirements": requirements,
+        "options": {"command": command, "env": env, **resources, "requirements": requirements},
     }

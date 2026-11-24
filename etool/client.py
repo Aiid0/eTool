@@ -1,4 +1,4 @@
-"""Durable local experiment lifecycle and verified artifact collection."""
+"""Durable task lifecycle and verified artifact collection."""
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -174,13 +174,14 @@ class Client:
             self._save(latest, last_error={"code": exc.code, "message": str(exc), "action": action})
             raise ToolError(f"{action}: {exc} (task retained; use resume {job['id']})") from exc
 
-    def doctor(self):
+    def doctor(self, project_path=None):
+        requirements = load_project(project_path)["requirements"] if project_path is not None else {}
         for binary in ("docker", "ssh", "rsync", "gzip"):
             if not shutil.which(binary):
                 raise ToolError(f"Missing local dependency: {binary}")
         self.transport.run(["docker", "version", "--format", "{{.Server.Version}}"])
         try:
-            return self.transport.remote("doctor")
+            return self.transport.remote("doctor", requirements=requirements)
         except TransportError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -224,6 +225,7 @@ class Client:
             outputs = work / "local-check"
             outputs.mkdir(exist_ok=True)
             self.transport.run(["docker", "run", "--rm", "--network=none", "--read-only",
+                                "--env", "NVIDIA_VISIBLE_DEVICES=void",
                                 "--tmpfs", "/tmp:rw,size=64m", "--user", f"{os.getuid()}:{os.getgid()}",
                                 "--mount", f"type=bind,src={outputs},dst=/outputs", job["image_tag"],
                                 *project["local_check"]], log=work / "logs/local-check.log")
@@ -271,7 +273,14 @@ class Client:
             Transport(job["config"], progress=self.progress).upload(archive, directory, work / "logs/upload.log")
             loaded = self._remote(job, "load")
             self._save(job, "loaded", remote_image_id=loaded.get("image_id"))
-        self._emit(job, f"核对配置的物理 GPU {job['config']['gpu_index']}，提交独立后台容器")
+        requirements = job["project"].get("requirements")
+        gpu = requirements.get("gpu") if requirements is not None else None
+        if gpu is None and requirements is None and "gpu_uuid" in job["config"]:
+            gpu = {"index": job["config"]["gpu_index"]}
+        if gpu is not None:
+            self._emit(job, f"核对任务要求的物理 GPU {gpu['index']}，提交独立后台容器")
+        else:
+            self._emit(job, "提交独立后台容器")
         started = self._remote(job, "start", options=job["project"]["options"])
         self._save(job, started["state"], container_id=started.get("container_id"),
                    gpu=started.get("gpu"), exit_code=started.get("exit_code"), last_error=None)
@@ -326,7 +335,7 @@ class Client:
 
     def _fetch(self, job):
         work = self._path(job["id"])
-        self._emit(job, "在远端冻结结果、完整容器日志和 GPU 证据")
+        self._emit(job, "在远端冻结结果和完整容器日志")
         collected = self._remote(job, "collect")
         self._save(job, "collected", result_archive_sha256=collected["archive_sha256"],
                    result_manifest_sha256=collected["manifest_sha256"], exit_code=collected.get("exit_code"))

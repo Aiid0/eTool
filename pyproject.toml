@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "etool-gpu"
 version = "0.1.0"
-description = "Package and run tasks on GPU servers over SSH"
+description = "Package tasks, run them on a server, and retrieve the results"
 requires-python = ">=3.11"
 dependencies = []
 

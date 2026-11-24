@@ -119,10 +119,10 @@ def snapshot():
     }
 
 
-def gpu_identity(config):
+def gpu_identity(requirement):
     try:
         result = subprocess.run([
-            'nvidia-smi', '-i', config['gpu_uuid'],
+            'nvidia-smi', '-i', requirement['uuid'],
             '--query-gpu=index,uuid,name,pci.bus_id,driver_version,memory.free',
             '--format=csv,noheader,nounits',
         ], capture_output=True, text=True, timeout=20)
@@ -137,12 +137,70 @@ def gpu_identity(config):
         index, free = int(fields[0]), int(fields[5])
     except ValueError:
         fail('GPU_ERROR', 'Invalid GPU query response')
-    if index != config['gpu_index'] or fields[1] != config['gpu_uuid']:
+    if index != requirement['index'] or fields[1] != requirement['uuid']:
         fail('GPU_MISMATCH', 'GPU UUID and physical index do not match the configuration')
     return {
         'physical_index': index, 'uuid': fields[1], 'name': fields[2],
         'pci_bus_id': fields[3], 'driver_version': fields[4], 'memory_free_mib': free,
     }
+
+
+def validate_requirements(raw):
+    if not isinstance(raw, dict) or set(raw) - {'gpu'}:
+        fail('INVALID_REQUIREMENTS', 'requirements must be an object containing only gpu')
+    if 'gpu' not in raw:
+        return {}
+    gpu = raw['gpu']
+    if not isinstance(gpu, dict) or set(gpu) - {'uuid', 'index', 'min_free_mib'}:
+        fail('INVALID_REQUIREMENTS', 'requirements.gpu must contain uuid, index and optional min_free_mib')
+    uuid = gpu.get('uuid')
+    if not isinstance(uuid, str) or not re.fullmatch(
+            r'GPU-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', uuid):
+        fail('INVALID_REQUIREMENTS', 'requirements.gpu.uuid must be a complete NVIDIA GPU UUID')
+    if type(gpu.get('index')) is not int or gpu['index'] < 0:
+        fail('INVALID_REQUIREMENTS', 'requirements.gpu.index must be a nonnegative integer')
+    normalized = {'uuid': 'GPU-' + uuid[4:].lower(), 'index': gpu['index']}
+    if 'min_free_mib' in gpu:
+        free = gpu['min_free_mib']
+        if type(free) is not int or not 0 <= free <= 81920:
+            fail('INVALID_REQUIREMENTS', 'requirements.gpu.min_free_mib must be an integer between 0 and 81920')
+        normalized['min_free_mib'] = free
+    return {'gpu': normalized}
+
+
+def job_requirements(config, job):
+    project = job.get('project', {})
+    if not isinstance(project, dict):
+        fail('INVALID_JOB', 'Saved task project must be an object')
+    options = project.get('options', {})
+    if not isinstance(options, dict):
+        fail('INVALID_JOB', 'Saved task options must be an object')
+    if 'requirements' in project or 'requirements' in options:
+        requirements = validate_requirements(project.get('requirements', options.get('requirements')))
+        if 'requirements' in options and validate_requirements(options['requirements']) != requirements:
+            fail('INVALID_JOB', 'Task requirements and saved options do not match')
+        return requirements
+    # Old runs recorded GPU selection in their server configuration. New runs
+    # always carry requirements, including an empty object for CPU tasks.
+    saved_config = job.get('config', config)
+    if not isinstance(saved_config, dict):
+        fail('INVALID_JOB', 'Saved task configuration must be an object')
+    if 'gpu_uuid' not in saved_config and 'gpu_index' not in saved_config:
+        return {}
+    return validate_requirements({'gpu': {
+        'uuid': saved_config.get('gpu_uuid'), 'index': saved_config.get('gpu_index'),
+        'min_free_mib': options.get('min_free_gpu_mib', 256),
+    }})
+
+
+def check_gpu(requirement):
+    gpu = gpu_identity(requirement)
+    runtimes = json.loads(docker(['info', '--format', '{{json .Runtimes}}']).stdout)
+    if 'nvidia' not in runtimes:
+        fail('NVIDIA_RUNTIME_MISSING', 'Docker NVIDIA runtime is not available')
+    if 'min_free_mib' in requirement and gpu['memory_free_mib'] < requirement['min_free_mib']:
+        fail('GPU_MEMORY', 'Available GPU memory is below this task requirement')
+    return gpu
 
 
 def validate_config(raw):
@@ -155,13 +213,16 @@ def validate_config(raw):
             fail('INVALID_CONFIG', field + ' must use simple SSH host or user characters')
     if type(config['port']) is not int or not 1 <= config['port'] <= 65535:
         fail('INVALID_CONFIG', 'port must be an integer between 1 and 65535')
-    if type(config.get('gpu_index')) is not int or config['gpu_index'] < 0:
-        fail('INVALID_CONFIG', 'gpu_index must be a nonnegative integer')
-    gpu_uuid = config.get('gpu_uuid')
-    if not isinstance(gpu_uuid, str) or not re.fullmatch(
-            r'GPU-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', gpu_uuid):
-        fail('INVALID_CONFIG', 'gpu_uuid must be a complete NVIDIA GPU UUID')
-    config['gpu_uuid'] = 'GPU-' + gpu_uuid[4:].lower()
+    if ('gpu_uuid' in config) != ('gpu_index' in config):
+        fail('INVALID_CONFIG', 'Legacy gpu_uuid and gpu_index must be provided together')
+    if 'gpu_uuid' in config:
+        if type(config['gpu_index']) is not int or config['gpu_index'] < 0:
+            fail('INVALID_CONFIG', 'gpu_index must be a nonnegative integer')
+        gpu_uuid = config['gpu_uuid']
+        if not isinstance(gpu_uuid, str) or not re.fullmatch(
+                r'GPU-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', gpu_uuid):
+            fail('INVALID_CONFIG', 'gpu_uuid must be a complete NVIDIA GPU UUID')
+        config['gpu_uuid'] = 'GPU-' + gpu_uuid[4:].lower()
     root_value = config.get('remote_root')
     if not isinstance(root_value, str) or not re.fullmatch(r'/[A-Za-z0-9_./-]+', root_value):
         fail('UNSAFE_PATH', 'remote_root must be an absolute path using simple path characters')
@@ -249,7 +310,12 @@ def check_meta(meta, config, job):
     for key in ('image_tag', 'archive_sha256', 'archive_bytes', 'image_config_digest'):
         if key in job and key in saved and job[key] != saved[key]:
             fail('OWNERSHIP', 'Task identity or artifact digest does not match')
-    if meta.get('gpu_uuid') != config['gpu_uuid']:
+    requirements = job_requirements(config, job)
+    saved_requirements = (validate_requirements(meta['requirements']) if 'requirements' in meta
+                          else job_requirements(config, saved))
+    if saved_requirements != requirements:
+        fail('OWNERSHIP', 'Task requirements do not match the saved run')
+    if 'gpu_uuid' in meta and meta['gpu_uuid'] != requirements.get('gpu', {}).get('uuid'):
         fail('OWNERSHIP', 'Task GPU identity does not match')
 
 
@@ -310,11 +376,9 @@ def state_result(directory, meta, info=None):
     }
 
 
-def doctor(config):
-    gpu = gpu_identity(config)
-    runtimes = json.loads(docker(['info', '--format', '{{json .Runtimes}}']).stdout)
-    if 'nvidia' not in runtimes:
-        fail('NVIDIA_RUNTIME_MISSING', 'Docker NVIDIA runtime is not available')
+def doctor(config, requirements=None):
+    requirements = validate_requirements({} if requirements is None else requirements)
+    gpu = check_gpu(requirements['gpu']) if 'gpu' in requirements else None
     usage = shutil.disk_usage(Path(config['remote_root']).parent)
     return {'gpu': gpu, 'uid': os.getuid(), 'gid': os.getgid(),
             'docker_version': docker(['version', '--format', '{{.Server.Version}}']).stdout.strip(),
@@ -323,6 +387,7 @@ def doctor(config):
 
 
 def prepare(config, job):
+    requirements = job_requirements(config, job)
     root, directory = paths(config, job)
     if directory.exists():
         _, meta = owned(config, job)
@@ -340,7 +405,7 @@ def prepare(config, job):
     (directory / 'outputs').mkdir()
     (directory / 'logs').mkdir()
     meta = {'schema_version': 1, 'uid': os.getuid(), 'gid': os.getgid(), 'job': job,
-            'gpu_uuid': config['gpu_uuid'], 'state': 'prepared', 'baseline': baseline,
+            'requirements': requirements, 'state': 'prepared', 'baseline': baseline,
             'root_existed': root_existed, 'jobs_existed': jobs_existed, 'created_at': time.time()}
     write_meta(directory, meta)
     return {'directory': str(directory), 'state': 'prepared', 'baseline': baseline}
@@ -401,6 +466,8 @@ def load(config, job):
 
 
 def validate_options(raw):
+    if raw is not None and not isinstance(raw, dict):
+        fail('INVALID_OPTIONS', 'Task options must be an object')
     options = dict(raw or {})
     command = options.get('command')
     if command is not None and (not isinstance(command, list) or any(not isinstance(v, str) or '\0' in v for v in command)):
@@ -411,7 +478,7 @@ def validate_options(raw):
     for key, value in env.items():
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key) or not isinstance(value, str) or '\0' in value:
             fail('INVALID_OPTIONS', 'Invalid environment entry')
-        if key.startswith(('NVIDIA_', 'CUDA_VISIBLE', 'ETOOL_')):
+        if key.startswith(('NVIDIA_', 'CUDA_VISIBLE', 'ETOOL_')) or key == 'CUDA_DEVICE_ORDER':
             fail('GPU_POLICY', 'GPU and eTool environment variables are reserved')
     cpus = options.get('cpus', 1)
     if not isinstance(cpus, (int, float)) or isinstance(cpus, bool) or not math.isfinite(cpus) or not .1 <= cpus <= 32:
@@ -421,10 +488,15 @@ def validate_options(raw):
         if not isinstance(value, str) or not re.fullmatch(r'[1-9][0-9]*(?:[kKmMgG])?', value):
             fail('INVALID_OPTIONS', 'Invalid memory or shared-memory limit')
         options[key] = value
-    free = options.get('min_free_gpu_mib', 256)
-    if not isinstance(free, int) or isinstance(free, bool) or not 0 <= free <= 81920:
-        fail('INVALID_OPTIONS', 'Invalid free GPU memory requirement')
-    options.update(command=command, env=env, cpus=cpus, min_free_gpu_mib=free)
+    options.update(command=command, env=env, cpus=cpus)
+    if 'requirements' in options:
+        options['requirements'] = validate_requirements(options['requirements'])
+    else:
+        # Preserve the original normalized options when resuming old runs.
+        free = options.get('min_free_gpu_mib', 256)
+        if type(free) is not int or not 0 <= free <= 81920:
+            fail('INVALID_OPTIONS', 'Invalid free GPU memory requirement')
+        options['min_free_gpu_mib'] = free
     return options
 
 
@@ -473,53 +545,61 @@ def start(config, job, raw_options):
         fail('NOT_LOADED', 'Load the task image before starting')
     assert_image_owned(image, job, meta)
     options = validate_options(raw_options)
+    requirements = job_requirements(config, job)
+    if 'requirements' in options and options['requirements'] != requirements:
+        fail('OPTIONS_MISMATCH', 'Startup requirements do not match the saved task')
     if meta.get('options') and meta['options'] != options:
         fail('OPTIONS_MISMATCH', 'A resumed task must use the originally recorded options')
-    # The user home flock keeps this check + start atomic across this user's clients.
-    gpu_uuid = config['gpu_uuid']
-    contenders = docker(['ps', '-aq', '--filter', 'label=etool.gpu_uuid=' + gpu_uuid]).stdout.split()
-    for identifier in contenders:
-        other = inspect_container(identifier)
-        if not other:
-            continue
-        if other.get('Config', {}).get('Labels', {}).get('etool.job') == job['id']:
-            continue
-        if other.get('State', {}).get('Status') in ('running', 'created', 'restarting', 'paused'):
-            fail('GPU_BUSY', 'Another eTool task is using the configured GPU; retry when it finishes')
-    gpu = gpu_identity(config)
-    if gpu['memory_free_mib'] < options['min_free_gpu_mib']:
-        fail('GPU_MEMORY', 'Available GPU memory is below this experiment requirement')
-    atomic_json(directory / 'gpu-host.json', gpu)
-    meta.update(gpu=gpu, options=options)
+    gpu_requirement = requirements.get('gpu')
+    gpu = None
+    if gpu_requirement is not None:
+        # The user home flock keeps this check + start atomic across this user's clients.
+        gpu_uuid = gpu_requirement['uuid']
+        contenders = docker(['ps', '-aq', '--filter', 'label=etool.gpu_uuid=' + gpu_uuid]).stdout.split()
+        for identifier in contenders:
+            other = inspect_container(identifier)
+            if not other:
+                continue
+            if other.get('Config', {}).get('Labels', {}).get('etool.job') == job['id']:
+                continue
+            if other.get('State', {}).get('Status') in ('running', 'created', 'restarting', 'paused'):
+                fail('GPU_BUSY', 'Another eTool task is using the configured GPU; retry when it finishes')
+        gpu = check_gpu(gpu_requirement)
+        atomic_json(directory / 'gpu-host.json', gpu)
+    meta.update(gpu=gpu, options=options, requirements=requirements)
     write_meta(directory, meta)
-    labels = ['--label', 'etool.job=' + job['id'], '--label', 'etool.token=' + job['token'],
-              '--label', 'etool.gpu_uuid=' + gpu_uuid]
-    gpu_options = ['--runtime=nvidia', '--gpus', 'device=' + gpu_uuid,
-                   '--env', 'NVIDIA_VISIBLE_DEVICES=' + gpu_uuid,
-                   '--env', 'NVIDIA_DRIVER_CAPABILITIES=compute,utility']
-    probe_name = 'etool-probe-' + job['id']
-    stale_probe = inspect_container(probe_name)
-    if stale_probe:
-        assert_container_owned(stale_probe, job)
-        if stale_probe.get('State', {}).get('Running'):
-            fail('PROBE_RUNNING', 'An earlier GPU probe is still running; retry shortly')
-        docker(['rm', probe_name])
-    probe = docker(['run', '--rm', '--name', probe_name, *labels, *gpu_options,
-                    '--network=none', '--read-only', '--cap-drop=ALL',
-                    '--security-opt=no-new-privileges:true', '--entrypoint', 'nvidia-smi',
-                    job['image_tag'], '--query-gpu=uuid,name,pci.bus_id', '--format=csv,noheader'],
-                   check=False, timeout=60)
-    (directory / 'logs/gpu-probe.log').write_text(probe.stdout + probe.stderr)
-    if probe.returncode:
-        fail('GPU_PROBE', 'GPU probe failed; inspect the task GPU probe log')
-    visible = [line.strip().split(',')[0].strip() for line in probe.stdout.splitlines() if line.strip()]
-    if visible != [gpu_uuid]:
-        fail('GPU_MISMATCH', 'The probe container did not see exactly the configured GPU UUID')
+    labels = ['--label', 'etool.job=' + job['id'], '--label', 'etool.token=' + job['token']]
+    # An image may set NVIDIA_VISIBLE_DEVICES=all, and the daemon may use the
+    # NVIDIA runtime by default. Explicitly disable its device injection for CPU tasks.
+    device_options = ['--env', 'NVIDIA_VISIBLE_DEVICES=void']
+    if gpu_requirement is not None:
+        labels += ['--label', 'etool.gpu_uuid=' + gpu_uuid]
+        device_options = ['--runtime=nvidia', '--gpus', 'device=' + gpu_uuid,
+                          '--env', 'NVIDIA_VISIBLE_DEVICES=' + gpu_uuid,
+                          '--env', 'NVIDIA_DRIVER_CAPABILITIES=compute,utility']
+        probe_name = 'etool-probe-' + job['id']
+        stale_probe = inspect_container(probe_name)
+        if stale_probe:
+            assert_container_owned(stale_probe, job)
+            if stale_probe.get('State', {}).get('Running'):
+                fail('PROBE_RUNNING', 'An earlier GPU probe is still running; retry shortly')
+            docker(['rm', probe_name])
+        probe = docker(['run', '--rm', '--name', probe_name, *labels, *device_options,
+                        '--network=none', '--read-only', '--cap-drop=ALL',
+                        '--security-opt=no-new-privileges:true', '--entrypoint', 'nvidia-smi',
+                        job['image_tag'], '--query-gpu=uuid,name,pci.bus_id', '--format=csv,noheader'],
+                       check=False, timeout=60)
+        (directory / 'logs/gpu-probe.log').write_text(probe.stdout + probe.stderr)
+        if probe.returncode:
+            fail('GPU_PROBE', 'GPU probe failed; inspect the task GPU probe log')
+        visible = [line.strip().split(',')[0].strip() for line in probe.stdout.splitlines() if line.strip()]
+        if visible != [gpu_uuid]:
+            fail('GPU_MISMATCH', 'The probe container did not see exactly the configured GPU UUID')
+        device_options += ['--env', 'ETOOL_EXPECTED_GPU_UUID=' + gpu_uuid,
+                           '--env', 'ETOOL_HOST_GPU_INDEX=' + str(gpu_requirement['index']),
+                           '--env', 'CUDA_VISIBLE_DEVICES=' + gpu_uuid]
     if not existing:
-        create = ['create', '--name', job['container_name'], *labels, *gpu_options,
-                  '--env', 'ETOOL_EXPECTED_GPU_UUID=' + gpu_uuid,
-                  '--env', 'ETOOL_HOST_GPU_INDEX=' + str(config['gpu_index']),
-                  '--env', 'CUDA_VISIBLE_DEVICES=' + gpu_uuid,
+        create = ['create', '--name', job['container_name'], *labels, *device_options,
                   '--env', 'XDG_CACHE_HOME=/tmp/cache', '--env', 'TMPDIR=/tmp',
                   '--network=none', '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
                   '--cpus', str(options['cpus']), '--memory', options['memory'],
@@ -601,9 +681,10 @@ def logs(config, job, tail):
             'state': state_result(directory, meta, info)['state']}
 
 
-def payload_files(directory):
-    selected = [directory / 'gpu-host.json', directory / 'logs/container.log',
-                directory / 'logs/container-inspect.json', directory / 'logs/gpu-probe.log']
+def payload_files(directory, requirements):
+    selected = [directory / 'logs/container.log', directory / 'logs/container-inspect.json']
+    if 'gpu' in requirements:
+        selected += [directory / 'gpu-host.json', directory / 'logs/gpu-probe.log']
     outputs = directory / 'outputs'
     no_symlinks(outputs)
     for path in outputs.rglob('*'):
@@ -651,7 +732,7 @@ def collect(config, job):
     if result.returncode:
         fail('DOCKER_ERROR', 'Could not collect the complete container log')
     atomic_json(directory / 'logs/container-inspect.json', info)
-    files = payload_files(directory)
+    files = payload_files(directory, job_requirements(config, job))
     manifest = {'schema_version': 1, 'job_id': job['id'], 'files': [
         {'path': path.relative_to(directory).as_posix(), 'size': path.stat().st_size,
          'sha256': sha256(path)} for path in files]}
@@ -807,7 +888,7 @@ def handle(request):
     config = validate_config(request.get('config'))
     action = request.get('action')
     if action == 'doctor':
-        return doctor(config)
+        return doctor(config, validate_requirements(request.get('requirements', {})))
     job = validate_job(request.get('job'))
     with lock():
         if action == 'prepare':

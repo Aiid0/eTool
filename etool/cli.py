@@ -1,4 +1,4 @@
-"""Command line interface for durable Docker experiment jobs."""
+"""Command line interface for packaging tasks, running them remotely, and retrieving results."""
 
 import argparse
 import json
@@ -10,7 +10,7 @@ from .config import ConfigError, load_config
 
 
 def parser():
-    result = argparse.ArgumentParser(prog="etool", description="Package and run tasks on the configured GPU server.")
+    result = argparse.ArgumentParser(prog="etool", description="Package tasks, run them on a server, and retrieve the results.")
     result.add_argument("--version", action="version", version=f"etool {__version__}")
     result.add_argument("--config", help="Server configuration JSON (default: etool.json)")
     result.add_argument("--json", action="store_true", help="Emit the final result as JSON; send progress to stderr")
@@ -22,7 +22,8 @@ def parser():
         child.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         return child
 
-    add("doctor", "Check local tools, SSH, Docker and the assigned GPU")
+    child = add("doctor", "Check base tools and the task's declared environment requirements")
+    child.add_argument("project", nargs="?", help="Optional task configuration JSON or directory")
     add("list", "List locally recorded tasks")
     for action, description in (("pack", "Build and archive a task locally"),
                                 ("run", "Build, submit, wait, fetch, verify and clean a task")):
@@ -129,10 +130,10 @@ def _display(result, action, as_json):
     elif isinstance(result, dict) and ("id" in result or "job_id" in result):
         print(f"任务: {result.get('id', result.get('job_id'))}")
         if result.get("name"):
-            print(f"实验: {result['name']}")
+            print(f"任务名称: {result['name']}")
         print(f"状态: {result.get('state', result.get('status', '?'))}")
         if result.get("exit_code") is not None:
-            print(f"实验退出码: {result['exit_code']}")
+            print(f"任务退出码: {result['exit_code']}")
         if result.get("archive_bytes") is not None:
             print(f"镜像压缩包: {result['archive_bytes'] / 1024**2:.1f} MiB")
         gpu = result.get("gpu")
@@ -176,7 +177,7 @@ def main(argv=None):
         client = Client(load_config(args.config), progress=progress)
         action = args.action
         if action == "doctor":
-            result = client.doctor()
+            result = client.doctor(args.project)
         elif action == "list" or (action == "status" and args.job_id is None):
             result = client.list_jobs()
         elif action == "pack":
