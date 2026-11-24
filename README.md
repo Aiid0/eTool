@@ -4,6 +4,51 @@ eTool 是面向试验任务的远端 GPU 执行工具。它接收使用者提供
 
 任务的程序语言、框架、算法和业务参数由使用者定义。当前执行后端使用 Docker、SSH 和 NVIDIA GPU，任务环境需要适配服务器的运行条件。
 
+## 通过 Skill 安装
+
+在需要使用 eTool 的业务项目目录中执行：
+
+```bash
+npx skills add Aiid0/eTool --skill etool
+```
+
+按提示选择使用的智能体。安装器会一起下载 [SKILL.md](SKILL.md)、启动入口、程序源码和任务模板，默认安装到当前项目的 `.agents/skills/etool/`。安装需要 Node.js 22.20+、npm/npx 和 Git；运行入口还需要 uv，其他执行条件见 [运行环境](#运行环境)。安装后可让智能体按 eTool Skill 的说明准备和执行任务。
+
+例如，只为 Codex 安装且跳过交互选择：
+
+```bash
+npx skills add Aiid0/eTool --skill etool --agent codex -y
+```
+
+在当前业务项目中设置实际安装目录，再检查 CLI 入口：
+
+```bash
+ETOOL_SKILL="$PWD/.agents/skills/etool"
+uv run "$ETOOL_SKILL/scripts/etool.py" --version
+uv run "$ETOOL_SKILL/scripts/etool.py" --help
+```
+
+`scripts/etool.py` 使用 uv 的脚本环境运行随附源码，并保留当前业务项目目录。Python 解释器由脚本的版本要求选择，业务项目的 Python 依赖分别管理。使用复制安装等选项时，以安装器输出的实际路径设置 `ETOOL_SKILL`。
+
+### 在多个项目中使用
+
+用户级安装可供多个项目共用：
+
+```bash
+npx skills add Aiid0/eTool --skill etool -g
+ETOOL_SKILL="$HOME/.agents/skills/etool"
+```
+
+在各业务项目中分别准备 `etool.json` 和任务配置；默认 `.etool` 状态目录跟随该项目的配置文件。更新已安装的项目级或用户级 Skill：
+
+```bash
+npx skills check
+npx skills update etool -p
+# 用户级安装使用：npx skills update etool -g
+```
+
+未指定 Git 标签或 commit 时，安装来源是仓库默认分支。需要固定版本时，可在仓库地址后指定已存在的版本标签或完整 commit；具体语法见 [Skills CLI 文档](https://github.com/vercel-labs/skills/blob/main/docs/commands.md)。
+
 ## 能力与模块
 
 | 模块 | 职责 | 当前实现 |
@@ -16,7 +61,7 @@ eTool 是面向试验任务的远端 GPU 执行工具。它接收使用者提供
 
 [cli.py](etool/cli.py) 统一提供命令、进度显示、JSON 输出和退出码。每次运行有独立任务号和持久化记录，后台容器独立于本地终端运行。
 
-## 安装与环境
+## 运行环境
 
 | 位置 | 运行条件 |
 | --- | --- |
@@ -25,28 +70,16 @@ eTool 是面向试验任务的远端 GPU 执行工具。它接收使用者提供
 
 本地构建的镜像架构须与目标服务器兼容，当前构建接口没有提供跨架构选项。uv 的安装方式见 [官方文档](https://docs.astral.sh/uv/getting-started/installation/)，服务器的容器 GPU 支持按 [NVIDIA Container Toolkit 文档](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) 配置。
 
-下载源码并准备工具环境：
-
-```bash
-git clone https://github.com/Aiid0/eTool.git
-cd eTool
-uv sync --locked
-uv run etool --version
-uv run etool --help
-```
-
-本地开发默认使用 `.python-version` 指定的 Python 3.12，工具包支持 Python 3.11+，运行时只依赖标准库。根目录的 `pyproject.toml`、`uv.lock` 管理 eTool 环境；任务镜像的解释器和依赖由任务自己的构建定义管理。
-
-后续更新源码时，在 eTool 仓库根目录执行 `git pull --ff-only` 和 `uv sync --locked`。
+eTool 的 Python 运行时支持 Python 3.11+，只依赖标准库。Skill 启动器通过脚本元数据声明解释器要求；任务镜像的解释器和依赖由任务自己的构建定义管理。机制见 [uv 脚本环境说明](https://docs.astral.sh/uv/guides/scripts/#declaring-script-dependencies)。
 
 ## 首次使用
 
 ### 1. 配置服务器和 GPU
 
-在 eTool 仓库根目录复制示例配置：
+在业务项目根目录复制示例配置，`ETOOL_SKILL` 使用上面的实际安装路径：
 
 ```bash
-cp etool.example.json etool.json
+cp "$ETOOL_SKILL/etool.example.json" ./etool.json
 ```
 
 编辑 `etool.json`，把示例中的主机、SSH 用户、远端目录、GPU UUID 和物理编号替换为实际值。示例中的全零 UUID 只是占位，不能用于实际运行。`remote_root` 的父目录须已存在，登录用户须有创建和写入任务目录的权限。
@@ -60,15 +93,15 @@ ssh -p 22 gpuuser@gpu-server \
 
 将选中设备的 `index` 和完整 `uuid` 分别填入 `gpu_index`、`gpu_uuid`。eTool 使用非交互 SSH 认证和严格主机密钥检查，运行时不会提示输入登录密码或确认新主机。
 
-本机的 `etool.json` 已被 Git 忽略。默认 `state_dir` 为 `.etool`，相对配置文件所在目录定位，用于保存任务记录、镜像归档、日志和回收产物。
+默认 `state_dir` 为 `.etool`，相对配置文件所在目录定位，用于保存任务记录、镜像归档、日志和回收产物。服务器配置和任务记录由业务项目管理；需要保持本地使用时，将 `etool.json` 和 `.etool/` 加入该项目的 `.gitignore`。
 
 ### 2. 从模板创建任务
 
-以下命令在 eTool 仓库根目录执行：
+以下命令在业务项目根目录执行：
 
 ```bash
 mkdir -p tasks
-cp -R templates/task tasks/my-task
+cp -R "$ETOOL_SKILL/templates/task" tasks/my-task
 
 # 先运行任务自己的 Python 入口
 uv run --project tasks/my-task --locked python tasks/my-task/src/main.py \
@@ -78,15 +111,15 @@ uv run --project tasks/my-task --locked python tasks/my-task/src/main.py \
 
 初始模板会生成 `tasks/my-task/.tmp/outputs/result.json`，内容为 `{"status": "template_ready"}`。它用于确认配置读取、入口调用和结果写入，业务计算在 `src/task.py` 的 `run_task` 中实现。
 
-修改任务时，代码放在 `src/`，业务参数放在 `config/task.json`，执行参数放在 `experiment.json`，依赖和系统环境由任务的 `pyproject.toml`、`uv.lock` 与 Dockerfile 管理。`tasks/` 是本地任务目录，已被 Git 忽略。详细接入方式见 [任务模板说明](templates/task/README.md)。
+修改任务时，代码放在 `src/`，业务参数放在 `config/task.json`，执行参数放在 `experiment.json`，依赖和系统环境由任务的 `pyproject.toml`、`uv.lock` 与 Dockerfile 管理。任务目录由业务项目管理。详细接入方式见 [任务模板说明](templates/task/README.md)。
 
 ### 3. 检查环境并执行
 
-服务器配置和任务环境准备完成后，在 eTool 仓库根目录执行：
+服务器配置和任务环境准备完成后，在业务项目根目录执行：
 
 ```bash
-uv run etool doctor
-uv run etool run tasks/my-task/experiment.json
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json doctor
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json run tasks/my-task/experiment.json
 ```
 
 `doctor` 先检查本地工具与 Docker，再检查远端环境。`run` 会实际构建镜像、上传并启动容器，等待结束后回收产物，再清理本次远端资源。默认配置下，业务结果保存在 `.etool/jobs/<任务号>/remote/outputs/`，程序日志保存在该运行目录的 `remote/logs/container.log`。
@@ -95,34 +128,34 @@ uv run etool run tasks/my-task/experiment.json
 
 ## 完整使用流程
 
-先填写工具配置 `etool.json`，并按 [官方任务模板](templates/task/README.md) 准备代码、运行环境和任务配置。以下命令均在 eTool 仓库根目录执行，服务器上的操作由 eTool 通过 SSH 完成。将 `TASK_CONFIG` 替换为任务配置路径，将 `JOB_ID` 替换为 `pack` 输出的任务号。
+先填写业务项目中的 `etool.json`，并按 [官方任务模板](templates/task/README.md) 准备代码、运行环境和任务配置。以下命令均在业务项目根目录执行，服务器上的操作由 eTool 通过 SSH 完成。`ETOOL_SKILL` 指向实际安装目录；将 `TASK_CONFIG` 替换为任务配置路径，将 `JOB_ID` 替换为 `pack` 输出的任务号。
 
 ```bash
 TASK_CONFIG='/path/to/experiment.json'
 
 # 1. 检查服务器连接、GPU 和 Docker 环境
-uv run etool doctor
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json doctor
 
 # 2. 本地构建镜像、执行可选检查并导出归档
-uv run etool pack "$TASK_CONFIG"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json pack "$TASK_CONFIG"
 JOB_ID='替换为 pack 输出的任务号'
 
 # 3. 上传镜像并启动远端后台容器
-uv run etool submit "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json submit "$JOB_ID"
 
 # 4. 查看状态、日志，并等待容器结束
-uv run etool status "$JOB_ID"
-uv run etool logs "$JOB_ID" --tail 200
-uv run etool wait "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json status "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json logs "$JOB_ID" --tail 200
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json wait "$JOB_ID"
 
 # 5. 回收日志和产物，确认本地副本；此时保留远端资源
-uv run etool fetch "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json fetch "$JOB_ID"
 
 # 6. 删除本次运行的远端容器、专属镜像和任务目录
-uv run etool clean "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json clean "$JOB_ID"
 
 # 7. 读取本地最终记录，成功清理后的状态为 cleaned
-uv run etool status "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json status "$JOB_ID"
 ```
 
 任务非零退出后仍可继续 `fetch` 回收失败日志和部分产物，再执行 `clean`。
@@ -133,47 +166,35 @@ uv run etool status "$JOB_ID"
 
 | 命令 | 清理行为 |
 | --- | --- |
-| `uv run etool run "$TASK_CONFIG"` | 新建运行，完成打包、提交、等待，在回收确认后自动清理 |
-| `uv run etool resume "$JOB_ID"` | 继续已有运行，在回收确认后自动清理 |
-| `uv run etool fetch "$JOB_ID" --cleanup` | 回收已有运行的产物，确认后立即清理 |
+| `run "$TASK_CONFIG"` | 新建运行，完成打包、提交、等待，在回收确认后自动清理 |
+| `resume "$JOB_ID"` | 继续已有运行，在回收确认后自动清理 |
+| `fetch "$JOB_ID" --cleanup` | 回收已有运行的产物，确认后立即清理 |
 
-单独执行 `fetch` 会保留远端资源，随后用 `clean` 删除。`cancel` 只停止容器，仍需回收和清理。连接、下载或回收检查失败时保留本地运行记录；修复后先用原任务号查询实际状态，再用 `resume` 继续。清理期间响应丢失时，部分或全部资源可能已经移除。
+表中命令通过 `uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json <命令>` 调用。单独执行 `fetch` 会保留远端资源，随后用 `clean` 删除。`cancel` 只停止容器，仍需回收和清理。连接、下载或回收检查失败时保留本地运行记录；修复后先用原任务号查询实际状态，再用 `resume` 继续。清理期间响应丢失时，部分或全部资源可能已经移除。
 
 清理范围限于本次运行的 Docker 容器、专属镜像和远端任务目录，保留共享源镜像，不执行全局 prune。`clean` 也会删除本地本次构建的任务镜像，但保留镜像归档、日志和已回收产物。
 
-## 在其他项目中使用
+## 智能体调用
 
-任务可以保存在自己的项目中。保留一份 eTool 源码，通过 `uv run --project` 指定工具环境，同时在业务项目中使用任务配置和服务器配置：
+智能体加载 [SKILL.md](SKILL.md) 后，应从发现信息中取得实际 Skill 目录，在业务项目目录中调用随附入口。使用 `--json` 获取最终 JSON 结果，构建和传输进度会写入 stderr：
 
 ```bash
-# 当前目录为自己的业务项目，替换为 eTool 源码的绝对路径
-ETOOL_SOURCE='/absolute/path/to/eTool'
-
-# 首次接入时复制并编辑服务器配置
-cp "$ETOOL_SOURCE/etool.example.json" ./etool.json
-
-# 当前目录已准备好 experiment.json 及其 Dockerfile 或源镜像配置
-uv run --project "$ETOOL_SOURCE" --locked etool \
+# 当前目录已准备好服务器配置、experiment.json 及其构建上下文
+uv run "$ETOOL_SKILL/scripts/etool.py" \
   --config ./etool.json --json pack ./experiment.json
 ```
 
-`--project` 选择 eTool 的 Python 环境，命令的相对路径仍按当前业务项目目录解析。业务项目自己的 Python 依赖与 eTool 分别管理。`state_dir` 使用默认值时，记录和结果位于业务项目的 `.etool/`；多个项目共享同一个服务器配置文件时，也会共用该配置指向的状态目录。
-
-任务代码与输入文件需要位于构建上下文中，并由 Dockerfile 放入镜像。也可以把 [任务模板](templates/task/README.md) 复制到业务项目后修改。
-
-### 智能体调用
-
-能执行本地命令的智能体可调用同一 CLI。使用 `--json` 获取最终 JSON 结果，构建和传输进度会写入 stderr。建议保存 `pack` 输出的 `id`，然后按原任务号管理运行：
+相对路径按当前业务项目目录解析。保存 `pack` 输出的 `id`，然后按原任务号管理运行：
 
 ```bash
 JOB_ID='替换为 pack 输出的 id'
 
-uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json submit "$JOB_ID"
-uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json status "$JOB_ID"
-uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json logs "$JOB_ID" --tail 100
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json --json submit "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json --json status "$JOB_ID"
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json --json logs "$JOB_ID" --tail 100
 
 # 容器结束后回收产物，并清理本次远端资源
-uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json fetch "$JOB_ID" --cleanup
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json --json fetch "$JOB_ID" --cleanup
 ```
 
 `submit` 完成镜像上传、导入和容器启动后返回，任务在服务器后台继续运行。根据 `status` 的阶段和 `exit_code` 判断执行结果；等待超时、SSH 断连或启动响应丢失时，沿用原任务号查询和恢复。`run` 每次都会创建新的运行，适用于确实需要新执行的情况。
@@ -196,7 +217,7 @@ uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json fet
 
 `host` 和 `user` 按 `[A-Za-z0-9_][A-Za-z0-9_.-]*` 检查。`port` 和 `gpu_index` 不接受布尔值。`remote_root` 仅允许 ASCII 字母、数字、下划线、句点、短横线和斜杠，不允许 `.`、`..` 路径段；远端拒绝符号链接路径和已存在的非目录工作根。
 
-配置查找顺序为 `--config PATH`、`ETOOL_CONFIG`、当前目录及父目录中的 `etool.json`，最后回退到工具项目根目录。`config_path` 是解析后添加的来源信息，不是配置文件输入字段。
+配置查找顺序为 `--config PATH`、`ETOOL_CONFIG`、当前目录及父目录中的 `etool.json`，最后回退到工具安装目录中的 `etool.json`。实际配置文件需要自行准备，Skill 只分发示例配置。`config_path` 是解析后添加的来源信息，不是配置文件输入字段。
 
 ### 任务配置
 
@@ -232,7 +253,7 @@ uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json fet
 
 ## 命令
 
-通过 `uv run etool <命令>` 调用，具体参数可用 `--help` 查看。`--config PATH`、`--json` 可放在子命令前或后，`--version` 输出版本后退出。
+通过 `uv run "$ETOOL_SKILL/scripts/etool.py" <命令>` 调用，具体参数可用 `--help` 查看。`--config PATH`、`--json` 可放在子命令前或后，`--version` 输出版本后退出。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -267,6 +288,19 @@ uv run --project "$ETOOL_SOURCE" --locked etool --config ./etool.json --json fet
 任务非零退出后仍可回收日志和输出。`clean` 和 `fetch --cleanup` 需要先确认本地副本；`discard` 表示明确放弃未回收产物。清理均检查资源归属和容器停止状态，只删除本次运行的容器、专属镜像及目录，保留共享源镜像。
 
 清理中断通过归属日志恢复。资源已经移除后，重试只在确认资源不存在时返回完成。已清理运行的状态读取本地记录；日志在 `verified` 或 `cleaned` 阶段优先读取本地回收副本。
+
+## 源码开发
+
+修改 eTool 自身时，可以克隆仓库并准备开发环境：
+
+```bash
+git clone https://github.com/Aiid0/eTool.git
+cd eTool
+uv sync --locked
+uv run etool --help
+```
+
+开发环境默认使用 `.python-version` 指定的 Python 3.12，由仓库根目录的 `pyproject.toml`、`uv.lock` 管理。后续在仓库根目录执行 `git pull --ff-only` 和 `uv sync --locked` 更新源码与环境。
 
 ## 内部接口
 

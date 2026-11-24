@@ -1,6 +1,6 @@
 # 官方任务模板
 
-复制本目录建立自己的任务，按下面的位置修改代码、配置和运行环境。以下命令均从 eTool 根目录执行。
+本目录随 eTool Skill 一起安装。复制它建立自己的任务，按下面的位置修改代码、配置和运行环境。先按 [安装说明](https://github.com/Aiid0/eTool#通过-skill-安装) 设置 `ETOOL_SKILL` 为实际安装目录，以下命令均在业务项目根目录执行。
 
 ## 创建任务目录
 
@@ -8,7 +8,7 @@
 
 ```bash
 mkdir -p tasks
-cp -R templates/task tasks/my-task
+cp -R "$ETOOL_SKILL/templates/task" tasks/my-task
 ```
 
 任务也可以放在其他项目目录，提交时把配置路径指向那个目录即可。日常修改复制后的任务目录。
@@ -40,7 +40,7 @@ tasks/my-task/
 | --- | --- |
 | 任务的 `config/task.json` | 模型、输入、算法参数等业务配置，初始为 `{"parameters": {}}` |
 | 任务的 `experiment.json` | 任务名称、镜像来源、启动参数、资源和可选本地检查 |
-| eTool 根目录的 `etool.json` | 服务器、SSH、GPU 和本地状态目录 |
+| 业务项目的 `etool.json` | 服务器、SSH、GPU 和本地状态目录 |
 
 模板镜像的 ENTRYPOINT 已固定为 Python 和 `src/main.py`，因此 `experiment.json` 的 `command`、`local_check` 只填写 `--config`、`--output` 等参数，不再重复 Python 和脚本路径。这与 Docker 的 [ENTRYPOINT/CMD 规则](https://docs.docker.com/reference/dockerfile/#entrypoint) 一致。
 
@@ -57,15 +57,15 @@ tasks/my-task/
 | 业务配置 | `tasks/my-task/config/` | `/app/config/` |
 | 程序入口 | `tasks/my-task/src/main.py` | `/app/src/main.py` |
 
-代码和配置的复制位置由 Dockerfile 的 `COPY` 决定，入口由 `ENTRYPOINT` 决定。`experiment.json` 的 `command` 使用容器中的路径；`context` 和 `dockerfile` 使用本机路径。工具根目录的 `etool.json` 管理服务器与 GPU，不定义任务代码位置。
+代码和配置的复制位置由 Dockerfile 的 `COPY` 决定，入口由 `ENTRYPOINT` 决定。`experiment.json` 的 `command` 使用容器中的路径；`context` 和 `dockerfile` 使用本机路径。业务项目的 `etool.json` 管理服务器与 GPU，不定义任务代码位置。
 
 需要加入其他代码、数据或模型目录时，把它放进构建上下文，并同步修改 Dockerfile 的 `COPY` 和 `.dockerignore` 允许范围。Docker 的路径规则见 [构建上下文说明](https://docs.docker.com/build/concepts/context/)。
 
 ## 准备运行环境
 
-默认 Dockerfile 使用 `python:3.12-slim-bookworm`，并从 `ghcr.io/astral-sh/uv:0.12.5` 复制 uv。首次构建需要下载这两个基础镜像；Python 第三方依赖从任务自己的 `pyproject.toml` 和 `uv.lock` 安装，初始依赖为空。eTool 本地的 `.venv` 不进入任务镜像。
+默认 Dockerfile 使用 `python:3.12-slim-bookworm`，并从 `ghcr.io/astral-sh/uv:0.12.5` 复制 uv。首次构建需要下载这两个基础镜像；Python 第三方依赖从任务自己的 `pyproject.toml` 和 `uv.lock` 安装，初始依赖为空。eTool 的运行环境与任务镜像分别管理。
 
-在 eTool 根目录，用 `uv add --project tasks/my-task 包名` 增加任务依赖、`uv remove --project tasks/my-task 包名` 移除依赖。手动修改任务的依赖声明后执行 `uv lock --project tasks/my-task` 和 `uv sync --project tasks/my-task --locked`。依赖变化后重新构建镜像。Dockerfile 在构建阶段执行 `uv sync --locked --no-dev --no-cache`，运行时直接使用镜像中的 Python 环境。具体机制见 [uv 的 Docker 集成说明](https://docs.astral.sh/uv/guides/integration/docker/)。
+在业务项目根目录，用 `uv add --project tasks/my-task 包名` 增加任务依赖、`uv remove --project tasks/my-task 包名` 移除依赖。手动修改任务的依赖声明后执行 `uv lock --project tasks/my-task` 和 `uv sync --project tasks/my-task --locked`。依赖变化后重新构建镜像。Dockerfile 在构建阶段执行 `uv sync --locked --no-dev --no-cache`，运行时直接使用镜像中的 Python 环境。具体机制见 [uv 的 Docker 集成说明](https://docs.astral.sh/uv/guides/integration/docker/)。
 
 需要 GPU 框架时，先确定框架版本及其 Python、CUDA 和驱动要求，再修改任务的环境文件。使用 PyTorch 时，按 [官方安装选项](https://pytorch.org/get-started/locally/) 选择 CUDA 构建及依赖来源；服务端驱动兼容性按 [NVIDIA CUDA 兼容性说明](https://docs.nvidia.com/deploy/cuda-compatibility/latest/minor-version-compatibility.html) 核对。需要 CUDA 编译工具链或其他系统库时，在 Dockerfile 中选择对应基础环境并安装任务要求的包。调整 Python 版本时，同步修改 Dockerfile、`pyproject.toml` 和 `.python-version`，再更新锁文件。
 
@@ -103,10 +103,10 @@ docker run --rm --network=none --read-only \
 
 ## 交给 eTool 打包和执行
 
-在 eTool 根目录运行：
+在业务项目根目录运行，使用该项目的服务器配置：
 
 ```bash
-uv run etool pack tasks/my-task/experiment.json
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json pack tasks/my-task/experiment.json
 ```
 
 `pack` 在本地构建镜像、执行配置中的本地检查并导出归档，完成后输出任务号。本地检查输出和构建日志保存在 `.etool/jobs/<任务号>/`。
@@ -114,8 +114,8 @@ uv run etool pack tasks/my-task/experiment.json
 任务逻辑和环境准备完成后，可以检查服务器并执行完整流程：
 
 ```bash
-uv run etool doctor
-uv run etool run tasks/my-task/experiment.json
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json doctor
+uv run "$ETOOL_SKILL/scripts/etool.py" --config ./etool.json run tasks/my-task/experiment.json
 ```
 
-`run` 会创建新的运行记录，构建、上传并实际执行任务，随后回收日志和产物并清理远端资源。回收后的业务产物位于 `.etool/jobs/<任务号>/remote/outputs/`。使用前一次 `pack` 的任务号后台提交、查询或回收，见 [命令说明](../../README.md#命令)。
+`run` 会创建新的运行记录，构建、上传并实际执行任务，随后回收日志和产物并清理远端资源。回收后的业务产物位于 `.etool/jobs/<任务号>/remote/outputs/`。使用前一次 `pack` 的任务号后台提交、查询或回收，见 [命令说明](https://github.com/Aiid0/eTool#命令)。
